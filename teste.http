@@ -1,0 +1,6 @@
+POST http://127.0.0.1:8000/chat/usuario123
+Content-Type: application/json
+
+{
+    "mensagem": "meu nome é joão"
+}

@@ -1,0 +1,35 @@
+# --- Ambiente virtual ---
+venv/
+.env
+
+# --- Cache do Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Logs ---
+*.log
+
+# --- Arquivos temporários ---
+*.tmp
+*.swp
+*.swo
+*.bak
+
+# --- VS Code ---
+.vscode/
+*.code-workspace
+
+# --- MacOS ---
+.DS_Store
+
+# --- SQLite (se usar) ---
+*.sqlite3
+
+# --- Arquivos de teste e debug ---
+*.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
