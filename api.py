@@ -1,7 +1,8 @@
 from typing import Union
+
 from fastapi import FastAPI, Request
+
 from main import get_chat
-from financial_bot import bot
 
 app = FastAPI()
 
@@ -16,22 +17,10 @@ def read_item(item_id: int, q: Union[str, None] = None):
 
 @app.post("/chat/{user_id}")
 async def chat_endpoint(user_id: str, request: Request):
-    """Endpoint que usa nosso bot LangGraph"""
-    try:
-        data = await request.json()
-        mensagem = data.get("mensagem", "")
-        
-        # Cria o estado inicial
-        initial_state = {
-            "user_id": user_id,
-            "user_input": mensagem,
-            "response": ""
-        }
-        
-        # Executa o bot
-        result = bot.invoke(initial_state)
-        
-        return {"resposta": result["response"]}
-    
-    except Exception as e:
-        return {"error": f"Erro: {str(e)}"}
+    data = await request.json()
+    mensagem = data.get("mensagem")
+
+    chat = get_chat(user_id)  # Recupera ou cria
+    resposta = chat.send_message(mensagem)
+
+    return {"resposta": resposta.text}
