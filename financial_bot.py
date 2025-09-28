@@ -2,6 +2,15 @@ from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, START, END
 import google.generativeai as genai
 from dotenv import load_dotenv
+from models.database import get_db, create_tables
+from models.crud import (
+    get_or_create_user, 
+    create_transaction, 
+    get_user_balance,
+    save_conversation,
+    get_user_conversation_history,
+    get_user_transactions
+)
 import os
 import json
 
@@ -13,38 +22,67 @@ class FinancialState(TypedDict):
     user_input: str
     intent: Optional[str]
     transaction_data: Optional[dict]
+    conversation_context: Optional[list]
     response: str
 
 def simple_response_node(state: FinancialState) -> FinancialState:
-    """Responde baseado na intenção e dados extraídos"""
+    """Responde baseado na intenção, dados extraídos e contexto"""
     
     intent = state.get("intent", "chat")
     user_id = state["user_id"]
     user_input = state["user_input"]
     transaction_data = state.get("transaction_data", {})
+    conversation_context = state.get("conversation_context", [])
     
-    if intent == "add_expense":
-        if transaction_data:
-            amount = transaction_data.get("amount", 0)
-            category = transaction_data.get("category", "outros")
-            description = transaction_data.get("description", "")
+    try:
+        # Obtém sessão do banco
+        db = next(get_db())
+        
+        # Cria ou busca usuário
+        user = get_or_create_user(db, user_id)
+        
+        if intent == "add_expense":
+            if transaction_data:
+                amount = transaction_data.get("amount", 0)
+                category = transaction_data.get("category", "outros")
+                description = transaction_data.get("description", "")
+                
+                # Salva transação no banco
+                transaction = create_transaction(db, user_id, amount, category, description)
+                
+                state["response"] = f"💰 {user_id}, entendi!\n" + \
+                                f"📝 Descrição: {description}\n" + \
+                                f"💵 Valor: R$ {amount:.2f}\n" + \
+                                f"🏷️ Categoria: {category}\n" + \
+                                f"✅ Transação salva no banco!"
+            else:
+                state["response"] = f"💰 {user_id}, entendi que você gastou algo. Vou registrar essa despesa!"
+                
+        elif intent == "check_balance":
+            # Consulta saldo real do banco
+            balance = get_user_balance(db, user_id)
+            state["response"] = f"💳 {user_id}, seu saldo atual: R$ {balance:.2f}"
             
-            state["response"] = f"💰 {user_id}, entendi!\n" \
-                            f"📝 Descrição: {description}\n" \
-                            f"💵 Valor: R$ {amount:.2f}\n" \
-                            f"🏷️ Categoria: {category}\n" \
-                            f"✅ Vou registrar essa despesa!"
+        elif intent == "get_report":
+            # Busca transações recentes
+            recent_transactions = get_user_transactions(db, user_id, limit=5)
+            
+            if recent_transactions:
+                response = f"📊 {user_id}, suas últimas transações:\n"
+                for t in recent_transactions:
+                    response += f"• R$ {t.amount:.2f} - {t.category} ({t.date.strftime('%d/%m')})\n"
+                state["response"] = response
+            else:
+                state["response"] = f"📊 {user_id}, você ainda não tem transações registradas."
+                
         else:
-            state["response"] = f"💰 {user_id}, entendi que você gastou algo. Vou registrar essa despesa!"
-            
-    elif intent == "check_balance":
-        state["response"] = f"💳 {user_id}, vou consultar seu saldo atual..."
+            state["response"] = f"Olá {user_id}! Você disse: '{user_input}'"
         
-    elif intent == "get_report":
-        state["response"] = f"📊 {user_id}, vou gerar seu relatório financeiro..."
+        # Salva conversa no histórico
+        save_conversation(db, user_id, user_input, state["response"], intent)
         
-    else:
-        state["response"] = f"Olá {user_id}! Você disse: '{user_input}'"
+    except Exception as e:
+        state["response"] = f"Desculpe {user_id}, tive um problema: {str(e)}"
     
     return state
 
@@ -57,12 +95,14 @@ def create_simple_workflow():
     # Adiciona as funções como "nós"
     workflow.add_node("analisar_intencao", analyze_intent_node)
     workflow.add_node("extrair_dados", extract_transaction_data_node)
+    workflow.add_node("carregar_contexto", load_conversation_context_node)
     workflow.add_node("responder", simple_response_node)
     
     # Define o fluxo: START → analisar_intenção → extrair_dados → responder → END
     workflow.add_edge(START, "analisar_intencao")
     workflow.add_edge("analisar_intencao", "extrair_dados")
-    workflow.add_edge("extrair_dados", "responder")
+    workflow.add_edge("extrair_dados", "carregar_contexto")
+    workflow.add_edge("carregar_contexto", "responder")
     workflow.add_edge("responder", END)
     
     # Compila o fluxo
@@ -168,6 +208,32 @@ def extract_transaction_data_node(state: FinancialState) -> FinancialState:
     
     return state
 
+def load_conversation_context_node(state: FinancialState) -> FinancialState:
+    """Carregar histórico de conversas"""
+    user_id = state["user_id"]
+
+    try:
+        # Obtém sessão do banco
+        db = next(get_db())
+
+        # Busca histórico recente (últimas 3 conversas)
+        history = get_user_conversation_history(db, user_id, limit=3)
+
+        # Formata o contexto
+        context = []
+        for conv in reversed(history):  # Ordem cronológica
+            context.append(f"Usuário: {conv.message}")
+            context.append(f"Bot: {conv.response}")
+        
+        state["conversation_context"] = context
+
+    except Exception as e:
+        # Se der erro, usa contexto vazio
+        state["conversation_context"] = []
+    
+    return state
+
+
 def test_bot():
     """Função para testar nosso bot"""
     
@@ -184,9 +250,20 @@ def test_bot():
     # Mostra o resultado
     print(f"Resposta do bot: {result['response']}")
 
+
+# Executa o teste se este arquivo for rodado diretamente
+def initialize_database():
+    """Inicializa o banco de dados criando as tabelas"""
+    try:
+        create_tables()
+        print("✅ Banco de dados inicializado com sucesso!")
+    except Exception as e:
+        print(f"❌ Erro ao inicializar banco: {e}")
+
 # Cria uma instância do fluxo
 bot = create_simple_workflow()  
 
-# Executa o teste se este arquivo for rodado diretamente
+# Executa a inicialização se este arquivo for rodado diretamente
 if __name__ == "__main__":
+    initialize_database()
     test_bot()
